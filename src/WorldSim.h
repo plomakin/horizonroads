@@ -83,6 +83,7 @@ struct DriveSnapshot {
     bool wipersOn = false;
     float wiperPhase = 0.0f;
     bool autoDrive = true;
+    int turnSignal = 0; // -1 = Left blink, +1 = Right blink, 0 = Off
 
     // Environment & Sky
     float timeOfDay = 17.6f;    // 0..24 hours (17.6 = Golden Sunset!)
@@ -181,6 +182,8 @@ private:
     float m_worldTime = 0.0f;
 
     bool m_autoDrive = true;
+    bool m_zenPassing = false;
+    int m_turnSignal = 0;
     float m_cruiseTargetKmh = 95.0f;
     int m_carIndex = 0;
     int m_cameraMode = 0; // Default: Cockpit behind steering wheel!

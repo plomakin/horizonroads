@@ -1080,6 +1080,22 @@ private:
         const float gx = -0.30f + px;
         const float gy = -0.58f + py;
 
+        // Blinking Green Dashboard Turn-Signal Indicators during lane changes / Zen overtakes!
+        const bool blinkLit = (std::fmod(m_snap.worldTimeSec * 2.4f, 1.0f) < 0.52f);
+        for (int dir : {-1, 1}) {
+            bool active = (m_snap.turnSignal == dir) && blinkLit;
+            float ax = gx + dir * 0.24f * invA * 1.45f;
+            float ay = gy + 0.115f;
+            float cr = active ? 0.18f : 0.06f;
+            float cg = active ? 0.98f : 0.18f;
+            float cb = active ? 0.38f : 0.09f;
+            pushTri2D(m_verts2D,
+                      ax + dir * 0.032f * invA, ay,
+                      ax - dir * 0.012f * invA, ay + 0.024f,
+                      ax - dir * 0.012f * invA, ay - 0.024f,
+                      cr, cg, cb, 0.95f);
+        }
+
         if (m_snap.carIndex == 0 || m_snap.carIndex == 1) {
             // Twin Round Analog Speedometer & Tachometer Dials!
             Color3 dialGlow = (m_snap.carIndex == 0)

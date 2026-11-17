@@ -146,12 +146,13 @@ void WorldSim::initTraffic() {
         {0.82f, 0.22f, 0.20f}, {0.20f, 0.48f, 0.78f}, {0.88f, 0.86f, 0.82f},
         {0.25f, 0.58f, 0.38f}, {0.85f, 0.62f, 0.18f}, {0.32f, 0.34f, 0.40f}
     };
-    for (int i = 0; i < 10; ++i) {
+    // 3 well-spaced same-way cars (+2.70m right lane) + 3 well-spaced oncoming cars (-2.70m left lane)
+    for (int i = 0; i < 6; ++i) {
         TrafficCar tc{};
-        bool oncoming = (i % 3 != 0);
-        tc.s = 35.0 + i * 48.0;
-        tc.laneOffset = oncoming ? -2.75f : 2.75f;
-        tc.speedMs = oncoming ? (-21.0f - (i % 3) * 2.5f) : (17.5f + (i % 2) * 2.5f);
+        bool oncoming = (i % 2 == 1);
+        tc.s = 55.0 + i * 68.0;
+        tc.laneOffset = oncoming ? -2.70f : 2.70f;
+        tc.speedMs = oncoming ? (-20.5f - (i % 3) * 1.8f) : (16.8f + (i % 3) * 1.6f);
         tc.bodyType = i % 3;
         tc.color = palette[i % 6];
         m_traffic.push_back(tc);
@@ -279,40 +280,81 @@ void WorldSim::update(float dt, float steerInput, float throttleInput, float bra
 
     float effectiveThrottle = throttleInput;
     float targetSteer = std::clamp(steerInput, -1.0f, 1.0f);
+    m_turnSignal = 0;
 
     if (m_autoDrive) {
-        // Zen Auto-Drive smoothly holds right lane (+2.65m), overtaking slower same-lane cars cleanly!
-        float desiredLane = 2.65f;
+        // Smart Highway Zen Auto-Drive: adaptive follow when oncoming traffic is near,
+        // and brisk left-lane overtaking with turn signals whenever the passing lane is clear!
+        const TrafficCar* leadCar = nullptr;
+        double bestLeadDist = 1e9;
         for (const auto& tc : m_traffic) {
-            if (tc.speedMs > 0.0f && tc.s > m_s - 4.0 && tc.s < m_s + 42.0 && std::abs(tc.laneOffset - 2.75f) < 1.5f) {
-                // Check oncoming lane is clear before passing, otherwise match speed peacefully!
-                bool oncomingNear = false;
-                for (const auto& oc : m_traffic) {
-                    if (oc.speedMs < 0.0f && oc.s > m_s - 15.0 && oc.s < m_s + 95.0) {
-                        oncomingNear = true;
-                        break;
-                    }
+            if (tc.speedMs > 0.0f && std::abs(tc.laneOffset - 2.70f) < 1.5f) {
+                double relS = tc.s - m_s;
+                if (relS > -11.0 && relS < 64.0 && relS < bestLeadDist) {
+                    bestLeadDist = relS;
+                    leadCar = &tc;
                 }
-                if (!oncomingNear) desiredLane = -2.2f;
-                else effectiveThrottle = std::min(effectiveThrottle, (tc.speedMs * 3.6f < m_speedMs * 3.6f) ? 0.0f : 0.4f);
             }
         }
 
-        float latErr = desiredLane - m_lat;
-        float headTarget = std::clamp(latErr * 0.14f, -0.32f, 0.32f);
-        float steerCmd = (headTarget - m_heading) * 2.8f + roadCurv * 14.0f;
-        targetSteer = std::clamp(steerCmd, -0.85f, 0.85f);
-
-        float targetMs = (m_cruiseTargetKmh / 3.6f);
+        float targetMs = m_cruiseTargetKmh / 3.6f;
         if (throttleInput > 0.1f) targetMs = maxSpdKmh / 3.6f;
         if (brakeInput > 0.1f) targetMs = 8.0f;
+
+        if (leadCar != nullptr) {
+            // Check if oncoming left lane is clear enough to initiate or continue passing
+            const double clearAheadNeeded = m_zenPassing ? 48.0 : 128.0;
+            bool oncomingBlocking = false;
+            for (const auto& oc : m_traffic) {
+                if (oc.speedMs < 0.0f && oc.s > m_s - 8.0 && oc.s < m_s + clearAheadNeeded) {
+                    oncomingBlocking = true;
+                    break;
+                }
+            }
+
+            if (!oncomingBlocking && (targetMs > leadCar->speedMs + 1.2f || m_zenPassing)) {
+                m_zenPassing = true;
+            } else if (oncomingBlocking && bestLeadDist > 5.0) {
+                // Abort early pass safely back to right lane if still well behind lead car
+                m_zenPassing = false;
+            }
+        } else {
+            m_zenPassing = false;
+        }
+
+        float desiredLane = m_zenPassing ? -2.55f : 2.65f;
+
+        // Turn signal indicator while changing lanes!
+        if (m_zenPassing && m_lat > -1.7f) m_turnSignal = -1;
+        else if (!m_zenPassing && m_lat < 1.7f) m_turnSignal = 1;
+
+        if (m_zenPassing && leadCar != nullptr) {
+            // Brisk passing speed surge (+27 km/h over overtaken car) until clear ahead!
+            targetMs = std::min(maxSpdKmh / 3.6f, std::max(targetMs, leadCar->speedMs + 7.5f));
+        } else if (!m_zenPassing && leadCar != nullptr && bestLeadDist > 0.0 && bestLeadDist < 36.0) {
+            // Smooth adaptive cruise spacing (~16m cushion) while waiting for oncoming car to clear!
+            float gapErr = static_cast<float>(bestLeadDist - 16.0);
+            float followMs = std::max(0.0f, leadCar->speedMs + gapErr * 0.45f);
+            targetMs = std::min(targetMs, followMs);
+        }
+
+        float latErr = desiredLane - m_lat;
+        float headTarget = std::clamp(latErr * 0.18f, -0.38f, 0.38f);
+        float steerCmd = (headTarget - m_heading) * 3.2f;
+        targetSteer = std::clamp(steerCmd, -0.90f, 0.90f);
+
         float spdErr = targetMs - m_speedMs;
-        effectiveThrottle = std::clamp(spdErr * 0.35f, 0.0f, 1.0f);
-        if (spdErr < -1.5f) brakeInput = std::max(brakeInput, std::min(0.7f, -spdErr * 0.15f));
+        effectiveThrottle = std::clamp(spdErr * 0.42f, 0.0f, 1.0f);
+        if (spdErr < -1.0f) {
+            brakeInput = std::max(brakeInput, std::min(0.85f, -spdErr * 0.22f));
+        }
     } else {
-        // Manual mode: if player hasn't pressed brake and cruise-assist isn't braking, gentle coasting or throttle
+        m_zenPassing = false;
+        if (steerInput < -0.22f) m_turnSignal = -1;
+        else if (steerInput > 0.22f) m_turnSignal = 1;
+
+        // Manual mode: gentle coasting floor (~58 km/h) when neither pedal is held
         if (throttleInput <= 0.02f && brakeInput <= 0.02f) {
-            // Gentle coasting cruise floor (~55 km/h) so tilt-only driving feels effortless too!
             if (m_speedMs * 3.6f < 58.0f) effectiveThrottle = 0.32f;
         }
     }
@@ -321,17 +363,18 @@ void WorldSim::update(float dt, float steerInput, float throttleInput, float bra
     const float drag = 0.0065f * m_speedMs * m_speedMs + 0.35f;
     const float grade = roadSlopeDyDs(m_s);
     float accel = effectiveThrottle * accelRate - brakeInput * 16.5f - drag * 0.18f - grade * 3.2f;
-    // Soft off-road grass drag if player wanders wide off the asphalt (> 5.5m)
-    if (std::abs(m_lat) > 5.6f) {
-        accel -= m_speedMs * 0.85f;
+    // Soft off-road grass drag only outside the 6.8m paved/gravel shoulder
+    if (std::abs(m_lat) > 6.8f) {
+        accel -= m_speedMs * 0.65f;
     }
     m_speedMs = std::clamp(m_speedMs + accel * dt, 0.0f, maxSpdKmh / 3.6f);
 
     // Lateral / Steering dynamics
     m_steerSmoothed += (targetSteer - m_steerSmoothed) * std::min(1.0f, dt * steerResp);
     const float speedTurnFactor = std::min(1.0f, m_speedMs / 10.0f);
-    m_heading += (m_steerSmoothed * 1.15f * speedTurnFactor - roadCurv * m_speedMs * 0.82f) * dt;
-    m_heading *= std::exp(-1.6f * dt); // Natural caster self-centering!
+    const float curveDrift = m_autoDrive ? 0.0f : (roadCurv * m_speedMs * 0.24f);
+    m_heading += (m_steerSmoothed * 1.25f * speedTurnFactor - curveDrift) * dt;
+    m_heading *= std::exp(-1.7f * dt);
     m_heading = std::clamp(m_heading, -0.75f, 0.75f);
 
     m_s += static_cast<double>(m_speedMs * std::cos(m_heading) * dt);
@@ -347,19 +390,32 @@ void WorldSim::update(float dt, float steerInput, float throttleInput, float bra
     m_bodyRoll += (targetRoll - m_bodyRoll) * std::min(1.0f, dt * 7.5f);
     m_bodyPitch += (targetPitch - m_bodyPitch) * std::min(1.0f, dt * 7.5f);
 
-    // Update ambient AI traffic & recycle cars smoothly around [m_s - 45, m_s + 260]
-    for (auto& tc : m_traffic) {
+    // Update ambient AI traffic & recycle with clean spacing (no clumping!)
+    for (size_t i = 0; i < m_traffic.size(); ++i) {
+        auto& tc = m_traffic[i];
         tc.s += static_cast<double>(tc.speedMs * dt);
-        if (tc.s < m_s - 45.0) {
-            tc.s = m_s + 210.0 + rand01() * 75.0;
-        } else if (tc.s > m_s + 290.0) {
-            tc.s = m_s + 210.0 + rand01() * 50.0;
+        if (tc.s < m_s - 55.0 || tc.s > m_s + 390.0) {
+            double candidateS = m_s + 235.0 + rand01() * 120.0;
+            for (size_t j = 0; j < m_traffic.size(); ++j) {
+                if (i == j) continue;
+                if (std::abs(m_traffic[j].laneOffset - tc.laneOffset) < 1.5f &&
+                    std::abs(m_traffic[j].s - candidateS) < 80.0) {
+                    candidateS = std::max(candidateS, m_traffic[j].s + 85.0);
+                }
+            }
+            tc.s = candidateS;
         }
-        // Soft courtesy nudge if player drifts toward a traffic car in manual mode (chill roadtrip, no harsh game-over!)
-        if (std::abs(tc.s - m_s) < 4.2 && std::abs(tc.laneOffset - m_lat) < 1.85f) {
-            float push = (m_lat >= tc.laneOffset) ? 1.0f : -1.0f;
-            m_lat += push * 6.0f * dt;
-            m_speedMs *= 0.94f;
+
+        // Tight physical hitbox (1.48m lateral half-sum) — glides smoothly into passing lane if bumped!
+        const double relS = tc.s - m_s;
+        const float latDiff = m_lat - tc.laneOffset;
+        if (std::abs(relS) < 3.6 && std::abs(latDiff) < 1.48f) {
+            // Guide toward the open passing lane rather than trapping behind bumper
+            float slipDir = (tc.laneOffset > 0.0f && latDiff < 0.35f) ? -1.0f : ((latDiff >= 0.0f) ? 1.0f : -1.0f);
+            m_lat += slipDir * 7.5f * dt;
+            if (relS > 0.0 && tc.speedMs > 0.0f && std::abs(latDiff) < 0.9f) {
+                m_speedMs = std::min(m_speedMs, tc.speedMs + 2.0f);
+            }
         }
     }
 
@@ -396,6 +452,7 @@ void WorldSim::buildSnapshot(DriveSnapshot& out) const {
     out.wipersOn = wipers();
     out.wiperPhase = m_wiperPhase;
     out.autoDrive = m_autoDrive;
+    out.turnSignal = m_turnSignal;
 
     out.timeOfDay = m_timeOfDay;
     out.weather = m_activeWeather;
