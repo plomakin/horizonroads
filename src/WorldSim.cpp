@@ -150,9 +150,9 @@ void WorldSim::initTraffic() {
     for (int i = 0; i < 6; ++i) {
         TrafficCar tc{};
         bool oncoming = (i % 2 == 1);
-        tc.s = 55.0 + i * 68.0;
+        tc.s = 70.0 + i * 92.0;
         tc.laneOffset = oncoming ? -2.70f : 2.70f;
-        tc.speedMs = oncoming ? (-20.5f - (i % 3) * 1.8f) : (16.8f + (i % 3) * 1.6f);
+        tc.speedMs = oncoming ? (-20.0f - (i % 3) * 1.6f) : (16.5f + (i % 3) * 1.5f);
         tc.bodyType = i % 3;
         tc.color = palette[i % 6];
         m_traffic.push_back(tc);
@@ -283,14 +283,15 @@ void WorldSim::update(float dt, float steerInput, float throttleInput, float bra
     m_turnSignal = 0;
 
     if (m_autoDrive) {
-        // Smart Highway Zen Auto-Drive: adaptive follow when oncoming traffic is near,
-        // and brisk left-lane overtaking with turn signals whenever the passing lane is clear!
+        // Predictive Kinematic Zen Auto-Drive:
+        //  - Computes exact time-to-pass vs oncoming time-to-arrival before pulling out
+        //  - Emergency bail-out steers back into the right lane whenever oncoming traffic closes in!
         const TrafficCar* leadCar = nullptr;
         double bestLeadDist = 1e9;
         for (const auto& tc : m_traffic) {
-            if (tc.speedMs > 0.0f && std::abs(tc.laneOffset - 2.70f) < 1.5f) {
+            if (tc.speedMs > 0.0f && std::abs(tc.laneOffset - 2.70f) < 1.6f) {
                 double relS = tc.s - m_s;
-                if (relS > -11.0 && relS < 64.0 && relS < bestLeadDist) {
+                if (relS > -10.5 && relS < 52.0 && relS < bestLeadDist) {
                     bestLeadDist = relS;
                     leadCar = &tc;
                 }
@@ -301,52 +302,93 @@ void WorldSim::update(float dt, float steerInput, float throttleInput, float bra
         if (throttleInput > 0.1f) targetMs = maxSpdKmh / 3.6f;
         if (brakeInput > 0.1f) targetMs = 8.0f;
 
-        if (leadCar != nullptr) {
-            // Check if oncoming left lane is clear enough to initiate or continue passing
-            const double clearAheadNeeded = m_zenPassing ? 48.0 : 128.0;
-            bool oncomingBlocking = false;
-            for (const auto& oc : m_traffic) {
-                if (oc.speedMs < 0.0f && oc.s > m_s - 8.0 && oc.s < m_s + clearAheadNeeded) {
-                    oncomingBlocking = true;
-                    break;
-                }
-            }
+        // Compute nearest oncoming vehicle arrival time (seconds) in the left lane
+        float minOncomingSec = 999.0f;
+        const float estPassSpeedMs = (leadCar != nullptr)
+            ? std::min(maxSpdKmh / 3.6f, std::max(targetMs + 4.0f, leadCar->speedMs + 9.5f))
+            : std::max(18.0f, m_speedMs);
 
-            if (!oncomingBlocking && (targetMs > leadCar->speedMs + 1.2f || m_zenPassing)) {
-                m_zenPassing = true;
-            } else if (oncomingBlocking && bestLeadDist > 5.0) {
-                // Abort early pass safely back to right lane if still well behind lead car
-                m_zenPassing = false;
+        for (const auto& oc : m_traffic) {
+            if (oc.speedMs < 0.0f && oc.s > m_s - 6.0) {
+                float distAhead = static_cast<float>(oc.s - m_s);
+                float closingSpd = std::max(12.0f, estPassSpeedMs + std::abs(oc.speedMs));
+                float tArr = distAhead / closingSpd;
+                minOncomingSec = std::min(minOncomingSec, tArr);
+            }
+        }
+
+        bool emergencyAbort = false;
+        if (leadCar != nullptr) {
+            const float relPassSpd = std::max(5.5f, estPassSpeedMs - leadCar->speedMs);
+            const float distToClear = std::max(0.0f, static_cast<float>(bestLeadDist + 10.5));
+            const float secNeededToPass = (distToClear / relPassSpd) + 1.8f;
+
+            if (!m_zenPassing) {
+                // Only initiate pass from the 24m pocket when oncoming traffic leaves plenty of margin!
+                if (bestLeadDist <= 24.0 &&
+                    (targetMs > leadCar->speedMs + 1.0f) &&
+                    minOncomingSec > (secNeededToPass + 2.0f)) {
+                    m_zenPassing = true;
+                }
+            } else {
+                // Already passing: abort back to our lane if an oncoming car closes within danger threshold!
+                if (minOncomingSec < 3.0f && minOncomingSec < (secNeededToPass + 0.6f)) {
+                    m_zenPassing = false;
+                    emergencyAbort = true;
+                }
             }
         } else {
             m_zenPassing = false;
         }
 
         float desiredLane = m_zenPassing ? -2.55f : 2.65f;
+        float steerUrgency = 1.0f;
+
+        if (!m_zenPassing && m_lat < 1.8f) {
+            // Returning to right lane: make sure right lane isn't currently occupied right beside our door!
+            const bool besideLeadCar = (leadCar != nullptr && bestLeadDist > -5.2 && bestLeadDist < 5.4);
+            if (besideLeadCar) {
+                if (bestLeadDist < -1.2) {
+                    // Almost clear ahead of leadCar — sprint clear then merge right!
+                    desiredLane = -2.2f;
+                    targetMs = maxSpdKmh / 3.6f;
+                } else {
+                    // Alongside/slightly behind leadCar while oncoming approaches — brake behind bumper then merge right!
+                    desiredLane = -1.35f;
+                    targetMs = std::max(5.0f, leadCar->speedMs - 9.5f);
+                    brakeInput = 0.95f;
+                }
+            } else {
+                desiredLane = 2.65f;
+                if (minOncomingSec < 3.6f || emergencyAbort) {
+                    steerUrgency = 1.65f; // Crisp evasive return to own lane!
+                }
+            }
+        }
 
         // Turn signal indicator while changing lanes!
-        if (m_zenPassing && m_lat > -1.7f) m_turnSignal = -1;
-        else if (!m_zenPassing && m_lat < 1.7f) m_turnSignal = 1;
+        if (desiredLane < 0.0f && m_lat > -1.7f) m_turnSignal = -1;
+        else if (desiredLane > 0.0f && m_lat < 1.7f) m_turnSignal = 1;
 
         if (m_zenPassing && leadCar != nullptr) {
-            // Brisk passing speed surge (+27 km/h over overtaken car) until clear ahead!
-            targetMs = std::min(maxSpdKmh / 3.6f, std::max(targetMs, leadCar->speedMs + 7.5f));
-        } else if (!m_zenPassing && leadCar != nullptr && bestLeadDist > 0.0 && bestLeadDist < 36.0) {
-            // Smooth adaptive cruise spacing (~16m cushion) while waiting for oncoming car to clear!
-            float gapErr = static_cast<float>(bestLeadDist - 16.0);
-            float followMs = std::max(0.0f, leadCar->speedMs + gapErr * 0.45f);
+            // Brisk passing speed surge (+34 km/h over overtaken car) so time in oncoming lane stays short!
+            targetMs = estPassSpeedMs;
+        } else if (!m_zenPassing && leadCar != nullptr && bestLeadDist > 0.0 && bestLeadDist < 36.0 && m_lat > 0.5f) {
+            // Smooth adaptive cruise spacing (~15m cushion) in right lane while waiting for oncoming traffic to clear!
+            float gapErr = static_cast<float>(bestLeadDist - 15.0);
+            float followMs = std::max(0.0f, leadCar->speedMs + gapErr * 0.48f);
             targetMs = std::min(targetMs, followMs);
         }
 
         float latErr = desiredLane - m_lat;
-        float headTarget = std::clamp(latErr * 0.18f, -0.38f, 0.38f);
-        float steerCmd = (headTarget - m_heading) * 3.2f;
-        targetSteer = std::clamp(steerCmd, -0.90f, 0.90f);
+        float headTarget = std::clamp(latErr * 0.21f * steerUrgency, -0.46f, 0.46f);
+        float steerCmd = (headTarget - m_heading) * (3.4f * steerUrgency);
+        targetSteer = std::clamp(steerCmd, -1.0f, 1.0f);
 
         float spdErr = targetMs - m_speedMs;
-        effectiveThrottle = std::clamp(spdErr * 0.42f, 0.0f, 1.0f);
-        if (spdErr < -1.0f) {
-            brakeInput = std::max(brakeInput, std::min(0.85f, -spdErr * 0.22f));
+        effectiveThrottle = std::clamp(spdErr * 0.45f, 0.0f, 1.0f);
+        if (spdErr < -0.8f) {
+            brakeInput = std::max(brakeInput, std::min(0.95f, -spdErr * 0.28f));
         }
     } else {
         m_zenPassing = false;
@@ -390,30 +432,36 @@ void WorldSim::update(float dt, float steerInput, float throttleInput, float bra
     m_bodyRoll += (targetRoll - m_bodyRoll) * std::min(1.0f, dt * 7.5f);
     m_bodyPitch += (targetPitch - m_bodyPitch) * std::min(1.0f, dt * 7.5f);
 
-    // Update ambient AI traffic & recycle with clean spacing (no clumping!)
+    // Update ambient AI traffic & recycle far beyond fog horizon (390..540m) so cars never pop in mid-pass!
     for (size_t i = 0; i < m_traffic.size(); ++i) {
         auto& tc = m_traffic[i];
         tc.s += static_cast<double>(tc.speedMs * dt);
-        if (tc.s < m_s - 55.0 || tc.s > m_s + 390.0) {
-            double candidateS = m_s + 235.0 + rand01() * 120.0;
+        if (tc.s < m_s - 55.0 || tc.s > m_s + 580.0) {
+            double candidateS = m_s + 390.0 + rand01() * 140.0;
             for (size_t j = 0; j < m_traffic.size(); ++j) {
                 if (i == j) continue;
                 if (std::abs(m_traffic[j].laneOffset - tc.laneOffset) < 1.5f &&
-                    std::abs(m_traffic[j].s - candidateS) < 80.0) {
-                    candidateS = std::max(candidateS, m_traffic[j].s + 85.0);
+                    std::abs(m_traffic[j].s - candidateS) < 110.0) {
+                    candidateS = std::max(candidateS, m_traffic[j].s + 115.0);
                 }
             }
             tc.s = candidateS;
         }
 
-        // Tight physical hitbox (1.48m lateral half-sum) — glides smoothly into passing lane if bumped!
+        // Physical collision deflection: oncoming cars always deflect player back toward right lane (+X)!
         const double relS = tc.s - m_s;
         const float latDiff = m_lat - tc.laneOffset;
-        if (std::abs(relS) < 3.6 && std::abs(latDiff) < 1.48f) {
-            // Guide toward the open passing lane rather than trapping behind bumper
-            float slipDir = (tc.laneOffset > 0.0f && latDiff < 0.35f) ? -1.0f : ((latDiff >= 0.0f) ? 1.0f : -1.0f);
-            m_lat += slipDir * 7.5f * dt;
-            if (relS > 0.0 && tc.speedMs > 0.0f && std::abs(latDiff) < 0.9f) {
+        if (std::abs(relS) < 4.0 && std::abs(latDiff) < 1.58f) {
+            float slipDir = 1.0f;
+            if (tc.speedMs < 0.0f) {
+                // Oncoming vehicle in left lane: push decisively back toward right lane!
+                slipDir = 1.0f;
+                m_heading = std::max(m_heading, 0.18f);
+            } else {
+                slipDir = (latDiff < 0.35f) ? -1.0f : 1.0f;
+            }
+            m_lat += slipDir * 11.0f * dt;
+            if (relS > 0.0 && tc.speedMs > 0.0f && std::abs(latDiff) < 0.95f) {
                 m_speedMs = std::min(m_speedMs, tc.speedMs + 2.0f);
             }
         }
