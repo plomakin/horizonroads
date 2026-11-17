@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1c2756"/>
+      <stop offset="48%" stop-color="#b93e5e"/>
+      <stop offset="82%" stop-color="#ff8c3b"/>
+      <stop offset="100%" stop-color="#ffd166"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff3b0"/>
+      <stop offset="100%" stop-color="#ff6b35"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <rect width="256" height="256" rx="54"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+    <rect width="256" height="256" fill="url(#sky)"/>
+    <!-- Glowing Golden Sunset Orb -->
+    <circle cx="128" cy="118" r="46" fill="url(#sun)"/>
+    <!-- Layered Distant Mountain Silhouettes -->
+    <polygon points="0,144 48,102 96,136 154,94 210,132 256,106 256,162 0,162" fill="#3a2349"/>
+    <polygon points="0,156 64,124 118,148 186,118 256,150 256,256 0,256" fill="#1e2a2f"/>
+    <!-- Perspective Highway Vanishing into Sunset -->
+    <polygon points="118,146 138,146 232,256 24,256" fill="#2a2d36"/>
+    <polygon points="115,146 119,146 34,256 22,256" fill="#e8eef2"/>
+    <polygon points="137,146 141,146 234,256 222,256" fill="#e8eef2"/>
+    <!-- Dashed Yellow Center Line -->
+    <polygon points="127,150 129,150 130,166 126,166" fill="#ffc83d"/>
+    <polygon points="126,176 130,176 132,202 124,202" fill="#ffc83d"/>
+    <polygon points="123,216 133,216 136,252 120,252" fill="#ffc83d"/>
+    <!-- Stylized Classic Steering Wheel Rim at Foreground -->
+    <circle cx="128" cy="244" r="68" fill="none" stroke="#6f3618" stroke-width="14"/>
+    <line x1="64" y1="234" x2="114" y2="244" stroke="#dde3ea" stroke-width="7" stroke-linecap="round"/>
+    <line x1="192" y1="234" x2="142" y2="244" stroke="#dde3ea" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="128" cy="244" r="16" fill="#dde3ea"/>
+  </g>
+  <rect x="6" y="6" width="244" height="244" rx="50" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="4"/>
+</svg>

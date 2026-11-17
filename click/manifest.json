@@ -1,0 +1,15 @@
+{
+  "name": "horizonroads.plm",
+  "version": "1.0.0",
+  "architecture": "arm64",
+  "title": "Horizon Roads 3D",
+  "description": "Endless scenic 3D road-trip driving game across 6 biomes with dynamic time-of-day, weather, tactile cockpit dashboards, tilt steering & Zen Auto-Drive.",
+  "framework": "ubuntu-touch-24.04-1.x",
+  "hooks": {
+    "horizonroads": {
+      "apparmor": "horizonroads.apparmor",
+      "desktop": "horizonroads.desktop"
+    }
+  },
+  "maintainer": "plomakin <plomakin@users.noreply.github.com>"
+}

@@ -1,0 +1,8 @@
+{
+  "policy_groups": [
+    "audio",
+    "keep-display-on",
+    "sensors"
+  ],
+  "policy_version": 2404.1
+}

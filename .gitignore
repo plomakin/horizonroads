@@ -1,0 +1,8 @@
+/build/
+/.clickable/
+/click/lib/
+/click/LICENSE
+*.click
+*.o
+*.so
+.DS_Store
