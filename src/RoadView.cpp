@@ -362,8 +362,9 @@ public:
         if (!QOpenGLContext::currentContext()) return;
         ensurePrograms();
 
-        const int w = std::max(1, m_fbSize.width());
-        const int h = std::max(1, m_fbSize.height());
+        const QSize curSz = framebufferObject() ? framebufferObject()->size() : m_fbSize;
+        const int w = std::max(1, curSz.width());
+        const int h = std::max(1, curSz.height());
         const float aspect = static_cast<float>(w) / static_cast<float>(h);
         glViewport(0, 0, w, h);
 
@@ -390,6 +391,7 @@ public:
         const float totalYaw = roadYaw + m_snap.playerHeading;
 
         // Camera placement relative to (carX, carY, s0)
+        const float viewYaw = (m_snap.cameraMode == 1) ? (totalYaw + m_snap.freeLookYaw) : totalYaw;
         float camOffX = 0.0f, camOffY = 1.24f, camOffZ = 0.15f;
         if (m_snap.cameraMode == 0) {
             // Cockpit Driver Seat (slightly left-of-center LHD behind steering wheel!)
@@ -397,10 +399,10 @@ public:
             camOffY = (m_snap.carIndex == 2) ? 1.12f : 1.28f;
             camOffZ = -0.15f;
         } else if (m_snap.cameraMode == 1) {
-            // 3rd-Person Chase Camera
-            camOffX = -std::sin(totalYaw) * 6.4f;
-            camOffY = 2.45f;
-            camOffZ = -std::cos(totalYaw) * 6.4f;
+            // 3rd-Person Telephoto Chase Camera (orbits cleanly around car with freeLookYaw!)
+            camOffX = -std::sin(viewYaw) * 7.2f;
+            camOffY = 2.18f + std::sin(roadPitch) * 1.2f;
+            camOffZ = -std::cos(viewYaw) * 7.2f;
         } else {
             // Panoramic Hood / Bonnet Camera
             camOffX = std::sin(totalYaw) * 0.8f;
@@ -408,15 +410,21 @@ public:
             camOffZ = std::cos(totalYaw) * 0.8f;
         }
 
-        // OpenGL camera looks down -Z, whereas our highway advances along +Z!
-        // Flip Z sign (`glZ = -(worldS - s0)`) so +s is straight ahead down -Z in standard right-handed OpenGL!
+        // Aspect-aware horizontal FOV (prevents wide-angle fisheye stretching on 20:9 phone screens!)
         QMatrix4x4 proj;
-        const float fov = (m_snap.cameraMode == 1) ? (64.0f + m_snap.speedKmh * 0.05f) : 66.0f;
-        proj.perspective(fov, aspect, 0.20f, 340.0f);
+        const float targetHFovDeg = (m_snap.cameraMode == 1)
+                                        ? (78.0f + std::min(7.0f, m_snap.speedKmh * 0.03f))
+                                        : 86.0f;
+        const float vFovRad = 2.0f * std::atan(std::tan(targetHFovDeg * 0.5f * (kPi / 180.0f)) / std::max(0.75f, aspect));
+        const float vFovDeg = std::clamp(vFovRad * (180.0f / kPi), 36.0f, 70.0f);
+        proj.perspective(vFovDeg, aspect, 0.20f, 340.0f);
 
         QMatrix4x4 rotOnly;
-        rotOnly.rotate(m_snap.bodyRollRad * 57.2958f, 0.0f, 0.0f, 1.0f);
-        rotOnly.rotate(-(roadPitch + m_snap.bodyPitchRad + m_snap.freeLookPitch) * 57.2958f + (m_snap.cameraMode == 1 ? 7.5f : 1.5f), 1.0f, 0.0f, 0.0f);
+        const float camRoll = (m_snap.cameraMode == 1) ? (m_snap.bodyRollRad * 0.25f) : m_snap.bodyRollRad;
+        rotOnly.rotate(camRoll * 57.2958f, 0.0f, 0.0f, 1.0f);
+        rotOnly.rotate(-(roadPitch + (m_snap.cameraMode == 1 ? 0.0f : m_snap.bodyPitchRad) + m_snap.freeLookPitch) * 57.2958f +
+                           (m_snap.cameraMode == 1 ? 8.2f : 1.5f),
+                       1.0f, 0.0f, 0.0f);
         rotOnly.rotate((totalYaw + m_snap.freeLookYaw) * 57.2958f, 0.0f, 1.0f, 0.0f);
 
         QMatrix4x4 view = rotOnly;
@@ -557,72 +565,156 @@ private:
         glDisableVertexAttribArray(m_aUiCol);
     }
 
-    void buildVehicleMesh(float x, float y, float z, float yawRad, int style, const Color3& bodyCol, bool facingAway, bool isPlayer) {
-        // Build rotated local box helper
-        const float cy = std::cos(yawRad), sy = std::sin(yawRad);
-        auto addPart = [&](float lx, float ly, float lz, float wx, float wy, float wz, const Color3& c, float emis = 0.0f) {
-            float rx = x + lx * cy - lz * sy;
-            float rz = z + lx * sy + lz * cy;
-            pushBox3D(m_verts3D, rx, y + ly, rz, wx, wy, wz, c, emis);
+    void buildVehicleMesh(float x, float y, float z,
+                          float yawRad, float pitchRad, float rollRad,
+                          int style, const Color3& bodyCol, bool isPlayer) {
+        // True SO(3) rigid-body 3D oriented box builder — rotates all 8 corners & 6 face normals
+        // cleanly by (roll -> pitch -> yaw) so car proportions stay 100% locked at every road angle!
+        const float cy = std::cos(yawRad),   sy = std::sin(yawRad);
+        const float cp = std::cos(pitchRad), sp = std::sin(pitchRad);
+        const float cr = std::cos(rollRad),  sr = std::sin(rollRad);
+
+        auto xformVec = [&](float vx, float vy, float vz, float& ox, float& oy, float& oz) {
+            // 1. Roll around longitudinal Z
+            float x1 = vx * cr - vy * sr;
+            float y1 = vx * sr + vy * cr;
+            float z1 = vz;
+            // 2. Pitch around lateral X (positive pitch lifts nose at vz < 0)
+            float x2 = x1;
+            float y2 = y1 * cp - z1 * sp;
+            float z2 = y1 * sp + z1 * cp;
+            // 3. Yaw around vertical Y (positive yaw turns nose at vz < 0 toward +X)
+            ox = x2 * cy - z2 * sy;
+            oy = y2;
+            oz = x2 * sy + z2 * cy;
+        };
+
+        auto addPart = [&](float lx, float lyBottom, float lz,
+                           float wx, float wy, float wz,
+                           const Color3& c, float emis = 0.0f) {
+            const float hx = wx * 0.5f;
+            const float hz = wz * 0.5f;
+            const float y0 = lyBottom;
+            const float y1 = lyBottom + wy;
+
+            float P[8][3];
+            const float localPts[8][3] = {
+                {lx - hx, y0, lz - hz}, // 0: front-bottom-left
+                {lx + hx, y0, lz - hz}, // 1: front-bottom-right
+                {lx + hx, y1, lz - hz}, // 2: front-top-right
+                {lx - hx, y1, lz - hz}, // 3: front-top-left
+                {lx - hx, y0, lz + hz}, // 4: rear-bottom-left
+                {lx + hx, y0, lz + hz}, // 5: rear-bottom-right
+                {lx + hx, y1, lz + hz}, // 6: rear-top-right
+                {lx - hx, y1, lz + hz}  // 7: rear-top-left
+            };
+            for (int i = 0; i < 8; ++i) {
+                float rx, ry, rz;
+                xformVec(localPts[i][0], localPts[i][1], localPts[i][2], rx, ry, rz);
+                P[i][0] = x + rx;
+                P[i][1] = y + ry;
+                P[i][2] = z + rz;
+            }
+
+            auto emitFace = [&](int a, int b, int d, int e, float lnx, float lny, float lnz) {
+                float nx, ny, nz;
+                xformVec(lnx, lny, lnz, nx, ny, nz);
+                pushQuad3D(m_verts3D,
+                           P[a][0], P[a][1], P[a][2],
+                           P[b][0], P[b][1], P[b][2],
+                           P[d][0], P[d][1], P[d][2],
+                           P[e][0], P[e][1], P[e][2],
+                           nx, ny, nz, c, emis);
+            };
+
+            emitFace(0, 1, 2, 3,  0.0f,  0.0f, -1.0f); // Front nose (-Z)
+            emitFace(5, 4, 7, 6,  0.0f,  0.0f,  1.0f); // Rear tail (+Z)
+            emitFace(4, 0, 3, 7, -1.0f,  0.0f,  0.0f); // Left side (-X)
+            emitFace(1, 5, 6, 2,  1.0f,  0.0f,  0.0f); // Right side (+X)
+            emitFace(3, 2, 6, 7,  0.0f,  1.0f,  0.0f); // Top (+Y)
         };
 
         const Color3 darkTrim{0.11f, 0.12f, 0.15f};
-        const Color3 glassCol{0.18f, 0.25f, 0.34f};
+        const Color3 glassCol{0.17f, 0.24f, 0.33f};
         const Color3 chrome{0.82f, 0.85f, 0.90f};
+        const Color3 headGlow{1.0f, 0.96f, 0.82f};
+
+        auto addWheels = [&](float trackX, float wbFrontZ, float wbRearZ, float tireDiam) {
+            for (float wx : {-trackX, trackX}) {
+                for (float wz : {wbFrontZ, wbRearZ}) {
+                    addPart(wx, 0.02f, wz, 0.26f, tireDiam, tireDiam, darkTrim);
+                    float hubX = wx + (wx < 0.0f ? -0.02f : 0.02f);
+                    addPart(hubX, 0.02f + tireDiam * 0.22f, wz, 0.25f, tireDiam * 0.56f, tireDiam * 0.56f, chrome);
+                }
+            }
+        };
 
         if (isPlayer) {
             if (m_snap.carIndex == 0) {
-                // '68 Canyon Cruiser (Cherry-Red Vintage Fastback)
+                // '68 Canyon Cruiser (Cherry-Red Vintage Fastback Coupe)
                 Color3 cherry{0.78f, 0.12f, 0.14f};
-                addPart(0.0f, 0.26f, 0.0f, 1.92f, 0.56f, 4.55f, cherry);
-                addPart(0.0f, 0.82f, 0.25f, 1.62f, 0.46f, 2.05f, glassCol);
-                addPart(0.0f, 1.24f, 0.30f, 1.56f, 0.07f, 1.80f, cherry);
-                addPart(0.0f, 0.24f,  2.30f, 1.96f, 0.16f, 0.14f, chrome); // Rear chrome bumper
-                addPart(0.0f, 0.24f, -2.30f, 1.96f, 0.16f, 0.14f, chrome);
-                // Quad round ruby taillights!
-                for (float tx : {-0.72f, -0.48f, 0.48f, 0.72f}) {
-                    addPart(tx, 0.52f, 2.29f, 0.16f, 0.14f, 0.06f, {1.0f, 0.12f, 0.10f}, 0.95f);
+                addPart(0.0f, 0.28f,  0.0f,  1.86f, 0.52f, 4.56f, cherry);       // Sculpted lower body
+                addPart(0.0f, 0.80f, -1.05f, 0.86f, 0.09f, 1.55f, cherry);       // Classic V8 hood power-bulge
+                addPart(0.0f, 0.80f,  0.22f, 1.54f, 0.44f, 1.95f, glassCol);     // Cabin greenhouse
+                addPart(0.0f, 1.21f,  0.26f, 1.48f, 0.07f, 1.65f, cherry);       // Fastback roof
+                addPart(0.0f, 0.25f,  2.31f, 1.92f, 0.15f, 0.14f, chrome);       // Rear chrome bumper
+                addPart(0.0f, 0.25f, -2.31f, 1.92f, 0.15f, 0.14f, chrome);       // Front chrome bumper
+                addPart(-0.96f, 0.76f, -0.55f, 0.14f, 0.10f, 0.14f, chrome);     // Chrome side mirrors
+                addPart( 0.96f, 0.76f, -0.55f, 0.14f, 0.10f, 0.14f, chrome);
+                for (float tx : {-0.68f, -0.44f, 0.44f, 0.68f}) {
+                    addPart(tx, 0.50f, 2.29f, 0.15f, 0.14f, 0.06f, {1.0f, 0.12f, 0.10f}, 0.95f);
                 }
+                addPart(-0.66f, 0.48f, -2.29f, 0.24f, 0.18f, 0.06f, headGlow, m_snap.headlightsOn ? 0.98f : 0.2f);
+                addPart( 0.66f, 0.48f, -2.29f, 0.24f, 0.18f, 0.06f, headGlow, m_snap.headlightsOn ? 0.98f : 0.2f);
+                addWheels(0.88f, -1.38f, 1.38f, 0.64f);
             } else if (m_snap.carIndex == 1) {
-                // '94 Nomad Wagon (Sage-Green Comfy Touring Estate + Roof Cargo Box!)
+                // '94 Nomad Wagon (Sage-Green Comfy Touring Estate + Roof Box)
                 Color3 sage{0.26f, 0.48f, 0.38f};
-                addPart(0.0f, 0.26f, 0.0f, 1.88f, 0.58f, 4.65f, sage);
-                addPart(0.0f, 0.84f, 0.42f, 1.68f, 0.54f, 2.95f, glassCol);
-                addPart(0.0f, 1.36f, 0.42f, 1.66f, 0.07f, 2.85f, sage);
-                addPart(0.0f, 1.44f, 0.50f, 0.92f, 0.26f, 1.85f, {0.75f, 0.78f, 0.82f}); // Roof luggage box!
-                addPart(-0.75f, 0.50f, 2.34f, 0.28f, 0.36f, 0.06f, {1.0f, 0.16f, 0.08f}, 0.95f);
-                addPart( 0.75f, 0.50f, 2.34f, 0.28f, 0.36f, 0.06f, {1.0f, 0.16f, 0.08f}, 0.95f);
+                addPart(0.0f, 0.28f, 0.0f,  1.84f, 0.54f, 4.66f, sage);
+                addPart(0.0f, 0.24f, 0.0f,  1.88f, 0.16f, 4.72f, darkTrim);      // Rugged touring lower cladding
+                addPart(0.0f, 0.82f, 0.40f, 1.62f, 0.50f, 2.88f, glassCol);      // Long wagon greenhouse
+                addPart(0.0f, 1.30f, 0.40f, 1.58f, 0.07f, 2.78f, sage);          // Wagon roof
+                addPart(0.0f, 1.38f, 0.46f, 0.86f, 0.24f, 1.80f, {0.76f, 0.79f, 0.83f}); // Rooftop cargo box
+                addPart(-0.73f, 0.48f, 2.34f, 0.26f, 0.38f, 0.06f, {1.0f, 0.16f, 0.08f}, 0.95f);
+                addPart( 0.73f, 0.48f, 2.34f, 0.26f, 0.38f, 0.06f, {1.0f, 0.16f, 0.08f}, 0.95f);
+                addPart(-0.66f, 0.50f, -2.34f, 0.32f, 0.18f, 0.06f, headGlow, m_snap.headlightsOn ? 0.98f : 0.2f);
+                addPart( 0.66f, 0.50f, -2.34f, 0.32f, 0.18f, 0.06f, headGlow, m_snap.headlightsOn ? 0.98f : 0.2f);
+                addWheels(0.87f, -1.40f, 1.40f, 0.64f);
             } else {
-                // Apex GT-RS (Sunburst Gold Mid-Engine Sport Coupe + GT Wing!)
+                // Apex GT-RS (Sunburst Gold Mid-Engine Sport Coupe + GT Wing)
                 Color3 gold{0.96f, 0.72f, 0.10f};
-                addPart(0.0f, 0.20f, 0.0f, 2.02f, 0.46f, 4.40f, gold);
-                addPart(0.0f, 0.66f, 0.10f, 1.56f, 0.42f, 1.85f, darkTrim);
-                // Rear GT wing!
-                addPart(-0.62f, 0.66f, 1.95f, 0.08f, 0.34f, 0.22f, darkTrim);
-                addPart( 0.62f, 0.66f, 1.95f, 0.08f, 0.34f, 0.22f, darkTrim);
-                addPart(0.0f,   0.98f, 2.00f, 1.96f, 0.06f, 0.32f, darkTrim);
-                // Full-width cyber LED taillight bar!
-                addPart(0.0f, 0.48f, 2.21f, 1.78f, 0.09f, 0.06f, {1.0f, 0.10f, 0.22f}, 1.0f);
+                addPart(0.0f, 0.22f,  0.0f,  1.96f, 0.44f, 4.38f, gold);
+                addPart(0.0f, 0.66f,  0.08f, 1.48f, 0.38f, 1.82f, darkTrim);     // Sleek teardrop canopy
+                addPart(0.0f, 1.02f,  0.12f, 1.36f, 0.05f, 1.35f, gold);         // Coupe roof panel
+                addPart(-0.60f, 0.66f, 1.92f, 0.08f, 0.32f, 0.22f, darkTrim);    // GT wing uprights
+                addPart( 0.60f, 0.66f, 1.92f, 0.08f, 0.32f, 0.22f, darkTrim);
+                addPart(0.0f,   0.96f, 1.96f, 1.88f, 0.06f, 0.30f, darkTrim);    // Carbon GT wing blade
+                addPart(0.0f,   0.46f, 2.20f, 1.74f, 0.09f, 0.06f, {1.0f, 0.10f, 0.22f}, 1.0f);
+                addPart(-0.68f, 0.42f, -2.20f, 0.30f, 0.12f, 0.06f, headGlow, m_snap.headlightsOn ? 0.98f : 0.2f);
+                addPart( 0.68f, 0.42f, -2.20f, 0.30f, 0.12f, 0.06f, headGlow, m_snap.headlightsOn ? 0.98f : 0.2f);
+                addWheels(0.92f, -1.32f, 1.32f, 0.62f);
             }
-            // 4 Wheels
-            for (float wx : {-0.92f, 0.92f})
-                for (float wz : {-1.38f, 1.38f})
-                    addPart(wx, 0.02f, wz, 0.26f, 0.62f, 0.66f, darkTrim);
             return;
         }
 
-        // Ambient Traffic Vehicles
-        const float len = (style == 2) ? 6.8f : 4.4f;
-        const float hgt = (style == 2) ? 2.4f : (style == 1 ? 1.45f : 0.62f);
-        addPart(0.0f, 0.24f, 0.0f, 1.90f, hgt, len, bodyCol);
+        // Ambient AI Traffic Vehicles (fully oriented in 3D along road yaw & slope!)
+        const float len = (style == 2) ? 6.6f : 4.45f;
+        const float bodyH = (style == 2) ? 2.25f : (style == 1 ? 1.25f : 0.56f);
+        addPart(0.0f, 0.28f, 0.0f, 1.86f, bodyH, len, bodyCol);
         if (style == 0) {
-            addPart(0.0f, 0.86f, 0.15f, 1.62f, 0.48f, 2.1f, glassCol);
+            addPart(0.0f, 0.84f, 0.15f, 1.56f, 0.44f, 2.05f, glassCol);
+            addPart(0.0f, 1.26f, 0.18f, 1.50f, 0.06f, 1.75f, bodyCol);
+        } else if (style == 1) {
+            addPart(0.0f, 0.84f, -0.35f, 1.66f, 0.52f, 2.95f, glassCol);
         }
-        // Headlights & Taillights facing viewer appropriately
-        const float zNearCam = len * 0.51f; // +Z in GL faces toward camera!
-        const Color3 lampCol = facingAway ? Color3{1.0f, 0.12f, 0.10f} : Color3{1.0f, 0.96f, 0.82f};
-        addPart(-0.68f, 0.50f, zNearCam, 0.28f, 0.16f, 0.08f, lampCol, 0.98f);
-        addPart( 0.68f, 0.50f, zNearCam, 0.28f, 0.16f, 0.08f, lampCol, 0.98f);
+        // Front Headlights (-Z in vehicle space) & Rear Taillights (+Z in vehicle space)
+        const float zFront = -len * 0.505f;
+        const float zRear  =  len * 0.505f;
+        addPart(-0.66f, 0.50f, zFront, 0.26f, 0.16f, 0.06f, headGlow, 0.98f);
+        addPart( 0.66f, 0.50f, zFront, 0.26f, 0.16f, 0.06f, headGlow, 0.98f);
+        addPart(-0.66f, 0.52f, zRear,  0.26f, 0.16f, 0.06f, {1.0f, 0.12f, 0.10f}, 0.98f);
+        addPart( 0.66f, 0.52f, zRear,  0.26f, 0.16f, 0.06f, {1.0f, 0.12f, 0.10f}, 0.98f);
+        addWheels(0.86f, -len * 0.31f, len * 0.31f, 0.62f);
     }
 
     void buildPropAt(PropKind kind, float x, float y, float z, int64_t seed) {
@@ -973,13 +1065,17 @@ private:
             float tx = WorldSim::roadCenterX(tc.s) + tc.laneOffset - originX;
             float ty = WorldSim::roadElevationY(tc.s) - originY;
             float tGlZ = -static_cast<float>(tc.s - s0);
-            float tYaw = std::atan(WorldSim::roadSlopeDxDs(tc.s));
-            buildVehicleMesh(tx, ty, tGlZ, tYaw, tc.bodyType, tc.color, tc.speedMs > 0.0f, false);
+            float tRoadYaw = std::atan(WorldSim::roadSlopeDxDs(tc.s));
+            float tRoadPitch = std::atan(WorldSim::roadSlopeDyDs(tc.s));
+            float vehYaw = (tc.speedMs >= 0.0f) ? tRoadYaw : (tRoadYaw + kPi);
+            float vehPitch = (tc.speedMs >= 0.0f) ? tRoadPitch : -tRoadPitch;
+            buildVehicleMesh(tx, ty, tGlZ, vehYaw, vehPitch, 0.0f, tc.bodyType, tc.color, false);
         }
 
-        // 5) 3rd-Person Player Car Mesh!
+        // 5) 3rd-Person Player Car Mesh (rigidly aligned with road slope + body pitch & cornering roll!)
         if (m_snap.cameraMode == 1) {
-            buildVehicleMesh(0.0f, 0.0f, 0.0f, playerTotalYaw, 0, {1, 1, 1}, true, true);
+            const float pPitch = std::atan(WorldSim::roadSlopeDyDs(s0)) + m_snap.bodyPitchRad;
+            buildVehicleMesh(0.0f, 0.0f, 0.0f, playerTotalYaw, pPitch, m_snap.bodyRollRad, 0, {1, 1, 1}, true);
         }
     }
 
