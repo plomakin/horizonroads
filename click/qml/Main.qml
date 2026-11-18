@@ -37,7 +37,7 @@ Window {
 
     Loader {
         id: accelLoader
-        active: rootWin.sensorReady && !road.paused && !road.autoDrive && road.tiltSteerEnabled
+        active: rootWin.sensorReady && !road.paused && road.tiltSteerEnabled
         sourceComponent: Component {
             Accelerometer {
                 active: true
@@ -652,6 +652,30 @@ Window {
                                 text: road.invertTilt ? "Tilt: Inverted" : "Tilt: Normal"
                                 color: "#232a3b"
                                 onClicked: road.invertTilt = !road.invertTilt
+                            }
+                        }
+
+                        Row {
+                            width: parent.width
+                            spacing: units.gu(1.2)
+                            Label {
+                                text: "Tilt Sens: " + road.steerSensitivity.toFixed(1) + "x"
+                                width: units.gu(16)
+                                anchors.verticalCenter: parent.verticalCenter
+                                fontSize: "small"
+                                color: "#ffffff"
+                            }
+                            Slider {
+                                width: parent.width - units.gu(18)
+                                minimumValue: 0.3
+                                maximumValue: 2.0
+                                live: true
+                                Component.onCompleted: value = road.steerSensitivity
+                                onValueChanged: {
+                                    if (Math.abs(road.steerSensitivity - value) > 0.02) {
+                                        road.steerSensitivity = value
+                                    }
+                                }
                             }
                         }
 

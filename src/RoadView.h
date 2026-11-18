@@ -130,6 +130,8 @@ private:
     bool m_tiltEnabled = true;
     bool m_invertTilt = false;
     float m_steerSens = 1.0f;
+    bool m_hasTiltSample = false;
+    float m_filteredTiltAxis = 0.0f;
     float m_lastRawTiltAxis = 0.0f;
     float m_tiltZeroOffset = 0.0f;
     float m_tiltSteerVal = 0.0f;

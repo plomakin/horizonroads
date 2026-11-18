@@ -1352,16 +1352,34 @@ QQuickFramebufferObject::Renderer* RoadView::createRenderer() const {
 void RoadView::setTiltGravity(float gx, float gy, float /*gz*/, bool rotated90) {
     // In 90° Landscape mode (phone held sideways), tilting the phone like a steering wheel tilts along Y!
     // In upright Portrait mode, tilting left/right tilts along X!
-    float raw = rotated90 ? (gy / 9.81f) : (-gx / 9.81f);
+    const float raw = rotated90 ? (gy / 9.81f) : (-gx / 9.81f);
     m_lastRawTiltAxis = raw;
-    float centered = (raw - m_tiltZeroOffset) * (m_invertTilt ? -1.0f : 1.0f);
-    // Gentle deadzone around 0 so holding steady feels effortless
-    if (std::abs(centered) < 0.035f) centered = 0.0f;
-    m_tiltSteerVal = std::clamp(centered * 1.85f * m_steerSens, -1.0f, 1.0f);
+    if (!m_hasTiltSample) {
+        m_filteredTiltAxis = raw;
+        m_hasTiltSample = true;
+    } else {
+        // Low-pass filter removes hand micro-tremors (~35ms time constant at 60Hz)
+        m_filteredTiltAxis += 0.16f * (raw - m_filteredTiltAxis);
+    }
+
+    const float centered = (m_filteredTiltAxis - m_tiltZeroOffset) * (m_invertTilt ? -1.0f : 1.0f);
+    // Smooth continuous deadzone (~2.8 deg) + progressive 1.60 expo curve over ~46 deg full lock!
+    constexpr float kDeadzone = 0.048f;
+    constexpr float kFullSpan = 0.67f;
+    const float absC = std::abs(centered);
+    if (absC <= kDeadzone) {
+        m_tiltSteerVal = 0.0f;
+        return;
+    }
+    const float sign = (centered >= 0.0f) ? 1.0f : -1.0f;
+    const float norm = std::clamp((absC - kDeadzone) / kFullSpan, 0.0f, 1.0f);
+    const float progressive = std::pow(norm, 1.60f) * 0.85f * m_steerSens;
+    m_tiltSteerVal = std::clamp(sign * progressive, -1.0f, 1.0f);
 }
 
 void RoadView::calibrateTiltZero() {
-    m_tiltZeroOffset = m_lastRawTiltAxis;
+    m_tiltZeroOffset = m_hasTiltSample ? m_filteredTiltAxis : m_lastRawTiltAxis;
+    m_tiltSteerVal = 0.0f;
     m_audio.triggerChime(0);
 }
 
@@ -1420,7 +1438,7 @@ void RoadView::setInvertTilt(bool inv) {
 }
 
 void RoadView::setSteerSensitivity(float s) {
-    m_steerSens = std::clamp(s, 0.4f, 2.5f);
+    m_steerSens = std::clamp(s, 0.25f, 2.2f);
     emit stateChanged();
 }
 
