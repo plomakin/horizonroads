@@ -92,41 +92,247 @@ Window {
                 anchors.fill: parent
             }
 
-            // === WINDSHIELD FREE-LOOK & MANUAL PEDALS MULTI-TOUCH ===
+            // === MANUAL DRIVING BOTTOM CONTROLS (LEFT/RIGHT TURN BUTTONS + BOTTOM BRAKE/GAS PEDALS!) ===
+            Item {
+                id: manualControlsLayer
+                anchors.fill: parent
+                visible: !road.autoDrive && !rootWin.drawerOpen && !rootWin.minimalZenUi
+
+                property bool leftDown: false
+                property bool rightDown: false
+                property bool brakeDown: false
+                property bool gasDown: false
+
+                // Bottom-Left: [ ◀ ] and [ ▶ ] Touch Turn Buttons
+                Row {
+                    id: steerBtnRow
+                    anchors.left: parent.left
+                    anchors.leftMargin: units.gu(1.6)
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: units.gu(1.2)
+                    spacing: units.gu(1.2)
+
+                    Rectangle {
+                        id: btnTurnLeft
+                        width: units.gu(8.8)
+                        height: units.gu(7.6)
+                        radius: units.gu(1.4)
+                        color: manualControlsLayer.leftDown ? "#cc38b6ff" : "#77121826"
+                        border.width: units.dp(2)
+                        border.color: manualControlsLayer.leftDown ? "#ffffff" : "#7fd4ff"
+
+                        Label {
+                            anchors.centerIn: parent
+                            text: "◀"
+                            font.bold: true
+                            fontSize: "large"
+                            color: "#ffffff"
+                        }
+                    }
+
+                    Rectangle {
+                        id: btnTurnRight
+                        width: units.gu(8.8)
+                        height: units.gu(7.6)
+                        radius: units.gu(1.4)
+                        color: manualControlsLayer.rightDown ? "#cc38b6ff" : "#77121826"
+                        border.width: units.dp(2)
+                        border.color: manualControlsLayer.rightDown ? "#ffffff" : "#7fd4ff"
+
+                        Label {
+                            anchors.centerIn: parent
+                            text: "▶"
+                            font.bold: true
+                            fontSize: "large"
+                            color: "#ffffff"
+                        }
+                    }
+                }
+
+                // Bottom-Right: [ BRAKE ] and [ GAS ] Pedals right at the bottom edge!
+                Row {
+                    id: pedalRow
+                    anchors.right: parent.right
+                    anchors.rightMargin: units.gu(1.6)
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: units.gu(1.2)
+                    spacing: units.gu(1.2)
+
+                    Rectangle {
+                        id: btnBrake
+                        width: units.gu(8.8)
+                        height: units.gu(6.8)
+                        anchors.bottom: parent.bottom
+                        radius: units.gu(1.3)
+                        color: manualControlsLayer.brakeDown ? "#ddff4d5a" : "#77161422"
+                        border.width: units.dp(2)
+                        border.color: manualControlsLayer.brakeDown ? "#ffffff" : "#ff7b86"
+
+                        Label {
+                            anchors.centerIn: parent
+                            text: "BRAKE"
+                            font.bold: true
+                            fontSize: "small"
+                            color: "#ffffff"
+                        }
+                    }
+
+                    Rectangle {
+                        id: btnGas
+                        width: units.gu(10.2)
+                        height: units.gu(8.4)
+                        anchors.bottom: parent.bottom
+                        radius: units.gu(1.3)
+                        color: manualControlsLayer.gasDown ? "#dd2ee59d" : "#7712221e"
+                        border.width: units.dp(2)
+                        border.color: manualControlsLayer.gasDown ? "#ffffff" : "#5effb8"
+
+                        Label {
+                            anchors.centerIn: parent
+                            text: "GAS"
+                            font.bold: true
+                            fontSize: "medium"
+                            color: "#ffffff"
+                        }
+                    }
+                }
+
+                // Bottom-Center Quick Tilt Toggle + Zero Calibration Pills
+                Row {
+                    id: tiltQuickRow
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: stage.width > units.gu(58) ? units.gu(1.6) : units.gu(9.6)
+                    spacing: units.gu(0.8)
+
+                    Rectangle {
+                        id: tiltTogglePill
+                        width: tiltToggleLbl.implicitWidth + units.gu(2.2)
+                        height: units.gu(3.6)
+                        radius: units.gu(1.8)
+                        color: road.tiltSteerEnabled ? "#cc16324f" : "#aa141824"
+                        border.width: units.dp(1)
+                        border.color: road.tiltSteerEnabled ? "#7fd4ff" : "#66ffffff"
+
+                        Label {
+                            id: tiltToggleLbl
+                            anchors.centerIn: parent
+                            text: road.tiltSteerEnabled ? "Tilt: ON" : "Tilt: OFF"
+                            fontSize: "x-small"
+                            font.bold: true
+                            color: "#e2eeff"
+                        }
+                    }
+
+                    Rectangle {
+                        id: tiltZeroPill
+                        visible: road.tiltSteerEnabled
+                        width: tiltZeroLbl.implicitWidth + units.gu(2.0)
+                        height: units.gu(3.6)
+                        radius: units.gu(1.8)
+                        color: "#aa1c2b3a"
+                        border.width: units.dp(1)
+                        border.color: "#7fd4ff"
+
+                        Label {
+                            id: tiltZeroLbl
+                            anchors.centerIn: parent
+                            text: "Zero Tilt"
+                            fontSize: "x-small"
+                            font.bold: true
+                            color: "#bfe6ff"
+                        }
+                    }
+                }
+            }
+
+            // === SIMULTANEOUS MULTI-TOUCH HANDLER (PEDALS + ◀/▶ BUTTONS + WINDSHIELD FREE-LOOK) ===
             MultiPointTouchArea {
                 id: driveTouch
                 anchors.fill: parent
                 enabled: !rootWin.drawerOpen
                 minimumTouchPoints: 1
-                maximumTouchPoints: 4
+                maximumTouchPoints: 5
 
                 property int lookId: -1
                 property real prevX: 0
                 property real prevY: 0
-                property int steerDragId: -1
-                property real steerOriginX: 0
+
+                function hitItem(px, py, item) {
+                    if (!item || !item.visible) return false
+                    var tl = item.mapToItem(driveTouch, -units.gu(0.6), -units.gu(0.6))
+                    var br = item.mapToItem(driveTouch, item.width + units.gu(0.6), item.height + units.gu(0.6))
+                    var minX = Math.min(tl.x, br.x), maxX = Math.max(tl.x, br.x)
+                    var minY = Math.min(tl.y, br.y), maxY = Math.max(tl.y, br.y)
+                    return px >= minX && px <= maxX && py >= minY && py <= maxY
+                }
+
+                function syncManualButtons() {
+                    if (road.autoDrive || rootWin.drawerOpen) {
+                        manualControlsLayer.leftDown = false
+                        manualControlsLayer.rightDown = false
+                        manualControlsLayer.brakeDown = false
+                        manualControlsLayer.gasDown = false
+                        road.setTouchSteer(0.0)
+                        road.setBrakeHeld(false)
+                        road.setGasHeld(false)
+                        return
+                    }
+
+                    var l = false, r = false, b = false, g = false
+                    var pts = [pt0, pt1, pt2, pt3]
+                    for (var i = 0; i < pts.length; ++i) {
+                        var p = pts[i]
+                        if (!p.pressed) continue
+                        if (hitItem(p.x, p.y, btnTurnLeft))  l = true
+                        if (hitItem(p.x, p.y, btnTurnRight)) r = true
+                        if (hitItem(p.x, p.y, btnBrake))     b = true
+                        if (hitItem(p.x, p.y, btnGas))       g = true
+                    }
+                    manualControlsLayer.leftDown = l
+                    manualControlsLayer.rightDown = r
+                    manualControlsLayer.brakeDown = b
+                    manualControlsLayer.gasDown = g
+
+                    road.setTouchSteer((r ? 0.82 : 0.0) - (l ? 0.82 : 0.0))
+                    road.setBrakeHeld(b)
+                    road.setGasHeld(g)
+                }
+
+                touchPoints: [
+                    TouchPoint { id: pt0 },
+                    TouchPoint { id: pt1 },
+                    TouchPoint { id: pt2 },
+                    TouchPoint { id: pt3 }
+                ]
 
                 onPressed: {
                     for (var i = 0; i < touchPoints.length; ++i) {
                         var tp = touchPoints[i]
-                        // Ignore top bar & bottom control dock
-                        if (!rootWin.minimalZenUi && (tp.y < units.gu(5.6) || tp.y > stage.height - units.gu(6.2))) continue
+                        if (!rootWin.minimalZenUi && tp.y < (road.autoDrive ? units.gu(5.4) : units.gu(10.6))) continue
+                        if (!rootWin.minimalZenUi && road.autoDrive && tp.y > stage.height - units.gu(6.0)) continue
 
-                        // Manual mode fallback touch steering zone (left-lower quarter when Tilt is OFF)
-                        if (!road.autoDrive && !road.tiltSteerEnabled &&
-                            tp.x < stage.width * 0.42 && tp.y > stage.height * 0.52 && steerDragId === -1) {
-                            steerDragId = tp.pointId
-                            steerOriginX = tp.x
-                            road.setTouchSteer(0)
+                        if (!road.autoDrive && hitItem(tp.x, tp.y, tiltTogglePill)) {
+                            road.tiltSteerEnabled = !road.tiltSteerEnabled
                             continue
                         }
-
+                        if (!road.autoDrive && hitItem(tp.x, tp.y, tiltZeroPill)) {
+                            road.calibrateTiltZero()
+                            continue
+                        }
+                        if (!road.autoDrive && (hitItem(tp.x, tp.y, btnTurnLeft) ||
+                                                hitItem(tp.x, tp.y, btnTurnRight) ||
+                                                hitItem(tp.x, tp.y, btnBrake) ||
+                                                hitItem(tp.x, tp.y, btnGas))) {
+                            continue
+                        }
                         if (lookId === -1) {
                             lookId = tp.pointId
                             prevX = tp.x
                             prevY = tp.y
                         }
                     }
+                    syncManualButtons()
                 }
 
                 onUpdated: {
@@ -136,113 +342,21 @@ Window {
                             road.addViewDrag(tp.x - prevX, tp.y - prevY)
                             prevX = tp.x
                             prevY = tp.y
-                        } else if (tp.pointId === steerDragId) {
-                            var sVal = (tp.x - steerOriginX) / units.gu(8.0)
-                            road.setTouchSteer(Math.max(-1.0, Math.min(1.0, sVal)))
                         }
                     }
+                    syncManualButtons()
                 }
 
-                function clearPts(pts) {
-                    for (var i = 0; i < pts.length; ++i) {
-                        var tp = pts[i]
-                        if (tp.pointId === lookId) lookId = -1
-                        if (tp.pointId === steerDragId) {
-                            steerDragId = -1
-                            road.setTouchSteer(0)
-                        }
+                onReleased: {
+                    for (var i = 0; i < touchPoints.length; ++i) {
+                        if (touchPoints[i].pointId === lookId) lookId = -1
                     }
-                }
-                onReleased: clearPts(touchPoints)
-                onCanceled: clearPts(touchPoints)
-            }
-
-            // Manual Mode Brake & Gas Pedals (visible only when Zen Auto-Drive is OFF!)
-            Item {
-                anchors.fill: parent
-                visible: !road.autoDrive && !rootWin.drawerOpen && !rootWin.minimalZenUi
-
-                // BRAKE Pedal (Left)
-                Rectangle {
-                    width: units.gu(9.5)
-                    height: units.gu(6.6)
-                    radius: units.gu(1.2)
-                    anchors.left: parent.left
-                    anchors.leftMargin: units.gu(2.0)
-                    anchors.bottom: bottomDock.top
-                    anchors.bottomMargin: units.gu(1.4)
-                    color: brakeArea.pressed ? "#ccff5252" : "#66141824"
-                    border.width: units.dp(1.5)
-                    border.color: "#ff7b7b"
-
-                    Label {
-                        anchors.centerIn: parent
-                        text: "BRAKE"
-                        font.bold: true
-                        fontSize: "small"
-                        color: "#ffffff"
-                    }
-                    MouseArea {
-                        id: brakeArea
-                        anchors.fill: parent
-                        onPressed: road.setBrakeHeld(true)
-                        onReleased: road.setBrakeHeld(false)
-                        onCanceled: road.setBrakeHeld(false)
-                    }
+                    syncManualButtons()
                 }
 
-                // GAS / BOOST Pedal (Right)
-                Rectangle {
-                    width: units.gu(10.5)
-                    height: units.gu(8.2)
-                    radius: units.gu(1.2)
-                    anchors.right: parent.right
-                    anchors.rightMargin: units.gu(2.0)
-                    anchors.bottom: bottomDock.top
-                    anchors.bottomMargin: units.gu(1.4)
-                    color: gasArea.pressed ? "#cc38e89c" : "#66141824"
-                    border.width: units.dp(1.5)
-                    border.color: "#5effb8"
-
-                    Label {
-                        anchors.centerIn: parent
-                        text: "GAS"
-                        font.bold: true
-                        fontSize: "medium"
-                        color: "#ffffff"
-                    }
-                    MouseArea {
-                        id: gasArea
-                        anchors.fill: parent
-                        onPressed: road.setGasHeld(true)
-                        onReleased: road.setGasHeld(false)
-                        onCanceled: road.setGasHeld(false)
-                    }
-                }
-
-                // Subtle hint pill for Tilt vs Touch steering
-                Rectangle {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.bottom: bottomDock.top
-                    anchors.bottomMargin: units.gu(1.0)
-                    width: tiltHint.implicitWidth + units.gu(2.4)
-                    height: units.gu(3.2)
-                    radius: units.gu(1.6)
-                    color: "#880e1320"
-
-                    Label {
-                        id: tiltHint
-                        anchors.centerIn: parent
-                        text: road.tiltSteerEnabled
-                              ? "Tilt phone to steer · Tap here to Recenter Wheel"
-                              : "Drag bottom-left to steer · Drag sky to look around"
-                        fontSize: "x-small"
-                        color: "#d4e2f4"
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: if (road.tiltSteerEnabled) road.calibrateTiltZero()
-                    }
+                onCanceled: {
+                    lookId = -1
+                    syncManualButtons()
                 }
             }
 
@@ -250,7 +364,7 @@ Window {
             Rectangle {
                 visible: road.bannerText.length > 0 && !rootWin.drawerOpen
                 anchors.horizontalCenter: parent.horizontalCenter
-                y: units.gu(6.6)
+                y: road.autoDrive ? units.gu(6.2) : units.gu(11.0)
                 width: bannerLbl.implicitWidth + units.gu(4)
                 height: units.gu(4.2)
                 radius: units.gu(0.8)
@@ -391,16 +505,15 @@ Window {
                 }
             }
 
-            // === BOTTOM COCKPIT QUICK SWITCH BAR ===
+            // === QUICK SWITCH DOCK (Bottom in Zen Mode; Top sub-bar in Manual Mode so bottom edge stays free for Pedals & Turn Buttons!) ===
             Rectangle {
                 id: bottomDock
                 visible: !rootWin.minimalZenUi && !rootWin.drawerOpen
-                anchors.bottom: parent.bottom
                 anchors.horizontalCenter: parent.horizontalCenter
-                anchors.bottomMargin: units.gu(0.8)
+                y: road.autoDrive ? (parent.height - height - units.gu(0.8)) : (topBar.height + units.gu(0.5))
                 width: dockRow.implicitWidth + units.gu(2.0)
-                height: units.gu(4.6)
-                radius: units.gu(2.3)
+                height: units.gu(4.4)
+                radius: units.gu(2.2)
                 color: "#aa0e1320"
                 border.width: units.dp(1)
                 border.color: "#44ffffff"

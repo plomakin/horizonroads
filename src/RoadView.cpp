@@ -1349,36 +1349,72 @@ QQuickFramebufferObject::Renderer* RoadView::createRenderer() const {
     return new HorizonRenderer();
 }
 
-void RoadView::setTiltGravity(float gx, float gy, float /*gz*/, bool rotated90) {
-    // In 90° Landscape mode (phone held sideways), tilting the phone like a steering wheel tilts along Y!
-    // In upright Portrait mode, tilting left/right tilts along X!
-    const float raw = rotated90 ? (gy / 9.81f) : (-gx / 9.81f);
-    m_lastRawTiltAxis = raw;
+void RoadView::setTiltGravity(float gx, float gy, float /*gz*/, bool /*rotated90*/) {
+    // Smooth low-pass filter on 2D screen-plane gravity vector (gx, gy)
     if (!m_hasTiltSample) {
-        m_filteredTiltAxis = raw;
+        m_fgx = gx;
+        m_fgy = gy;
+        // Snap initial "12 o'clock" reference to nearest cardinal screen axis
+        if (std::abs(gx) > std::abs(gy)) {
+            m_zeroUx = (gx >= 0.0f) ? 1.0f : -1.0f;
+            m_zeroUy = 0.0f;
+        } else {
+            m_zeroUx = 0.0f;
+            m_zeroUy = (gy >= 0.0f) ? 1.0f : -1.0f;
+        }
         m_hasTiltSample = true;
     } else {
-        // Low-pass filter removes hand micro-tremors (~35ms time constant at 60Hz)
-        m_filteredTiltAxis += 0.16f * (raw - m_filteredTiltAxis);
+        m_fgx += 0.24f * (gx - m_fgx);
+        m_fgy += 0.24f * (gy - m_fgy);
     }
 
-    const float centered = (m_filteredTiltAxis - m_tiltZeroOffset) * (m_invertTilt ? -1.0f : 1.0f);
-    // Smooth continuous deadzone (~2.8 deg) + progressive 1.60 expo curve over ~46 deg full lock!
-    constexpr float kDeadzone = 0.048f;
-    constexpr float kFullSpan = 0.67f;
-    const float absC = std::abs(centered);
-    if (absC <= kDeadzone) {
+    const float planeMag = std::hypot(m_fgx, m_fgy);
+    if (planeMag < 1.2f) {
+        // Phone is lying almost completely flat on a table
         m_tiltSteerVal = 0.0f;
         return;
     }
-    const float sign = (centered >= 0.0f) ? 1.0f : -1.0f;
-    const float norm = std::clamp((absC - kDeadzone) / kFullSpan, 0.0f, 1.0f);
-    const float progressive = std::pow(norm, 1.60f) * 0.85f * m_steerSens;
-    m_tiltSteerVal = std::clamp(sign * progressive, -1.0f, 1.0f);
+
+    const float ux = m_fgx / planeMag;
+    const float uy = m_fgy / planeMag;
+
+    // If user physically rotated the phone by ~90/180 deg to switch portrait <-> landscape,
+    // automatically re-anchor neutral "up" to the new cardinal axis!
+    const float cosDelta = m_zeroUx * ux + m_zeroUy * uy;
+    if (cosDelta < 0.25f) {
+        if (std::abs(ux) > std::abs(uy)) {
+            m_zeroUx = (ux >= 0.0f) ? 1.0f : -1.0f;
+            m_zeroUy = 0.0f;
+        } else {
+            m_zeroUx = 0.0f;
+            m_zeroUy = (uy >= 0.0f) ? 1.0f : -1.0f;
+        }
+    }
+
+    // 2D cross product gives exact sin(wheelAngle) across ALL phone orientations & couch recline angles!
+    const float sinAngle = (m_zeroUx * uy - m_zeroUy * ux) * (m_invertTilt ? -1.0f : 1.0f);
+    // Attenuate smoothly only if phone is nearly flat (< 2.5 m/s^2 in screen plane)
+    const float flatFade = std::clamp((planeMag - 1.2f) / 1.8f, 0.0f, 1.0f);
+
+    constexpr float kDeadzone = 0.026f; // ~1.5 deg calm center
+    constexpr float kFullLockSin = 0.56f; // ~34 deg comfortable wheel full-lock
+    const float absS = std::abs(sinAngle);
+    if (absS <= kDeadzone) {
+        m_tiltSteerVal = 0.0f;
+        return;
+    }
+    const float sign = (sinAngle >= 0.0f) ? 1.0f : -1.0f;
+    const float norm = std::clamp((absS - kDeadzone) / (kFullLockSin - kDeadzone), 0.0f, 1.0f);
+    const float curved = std::pow(norm, 1.25f) * 1.05f * m_steerSens * flatFade;
+    m_tiltSteerVal = std::clamp(sign * curved, -1.0f, 1.0f);
 }
 
 void RoadView::calibrateTiltZero() {
-    m_tiltZeroOffset = m_hasTiltSample ? m_filteredTiltAxis : m_lastRawTiltAxis;
+    const float len = std::hypot(m_fgx, m_fgy);
+    if (m_hasTiltSample && len > 1.2f) {
+        m_zeroUx = m_fgx / len;
+        m_zeroUy = m_fgy / len;
+    }
     m_tiltSteerVal = 0.0f;
     m_audio.triggerChime(0);
 }

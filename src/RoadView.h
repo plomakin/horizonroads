@@ -131,9 +131,10 @@ private:
     bool m_invertTilt = false;
     float m_steerSens = 1.0f;
     bool m_hasTiltSample = false;
-    float m_filteredTiltAxis = 0.0f;
-    float m_lastRawTiltAxis = 0.0f;
-    float m_tiltZeroOffset = 0.0f;
+    float m_fgx = 0.0f;
+    float m_fgy = 0.0f;
+    float m_zeroUx = 0.0f;
+    float m_zeroUy = 1.0f;
     float m_tiltSteerVal = 0.0f;
     float m_touchSteerVal = 0.0f;
     bool m_gasHeld = false;

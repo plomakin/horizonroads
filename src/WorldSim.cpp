@@ -411,18 +411,18 @@ void WorldSim::update(float dt, float steerInput, float throttleInput, float bra
     }
     m_speedMs = std::clamp(m_speedMs + accel * dt, 0.0f, maxSpdKmh / 3.6f);
 
-    // Lateral / Steering dynamics (Zen stays crisp; Manual gets speed-sensitive highway weighting!)
-    const float effSteerResp = m_autoDrive ? steerResp : (steerResp * 0.68f);
+    // Lateral / Steering dynamics (balanced responsive turn-in with smooth highway stability!)
+    const float effSteerResp = m_autoDrive ? steerResp : (steerResp * 0.85f);
     m_steerSmoothed += (targetSteer - m_steerSmoothed) * std::min(1.0f, dt * effSteerResp);
     const float speedTurnFactor = std::min(1.0f, m_speedMs / 10.0f);
     if (m_autoDrive) {
         m_heading += (m_steerSmoothed * 1.25f * speedTurnFactor) * dt;
         m_heading *= std::exp(-1.7f * dt);
     } else {
-        const float highSpeedWeight = 1.0f / (1.0f + m_speedMs * 0.045f);
-        const float curveDrift = roadCurv * m_speedMs * 0.14f;
-        m_heading += (m_steerSmoothed * 0.92f * speedTurnFactor * highSpeedWeight - curveDrift) * dt;
-        m_heading *= std::exp(-2.85f * dt); // Planted highway self-centering!
+        const float highSpeedWeight = 1.0f / (1.0f + m_speedMs * 0.014f);
+        const float curveDrift = roadCurv * m_speedMs * 0.16f;
+        m_heading += (m_steerSmoothed * 1.18f * speedTurnFactor * highSpeedWeight - curveDrift) * dt;
+        m_heading *= std::exp(-1.95f * dt);
     }
     m_heading = std::clamp(m_heading, -0.75f, 0.75f);
 
