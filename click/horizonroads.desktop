@@ -7,4 +7,5 @@ Terminal=false
 Type=Application
 Categories=Game;Simulation;
 X-Lomiri-Touch=true
+X-Lomiri-Single-Instance=true
 X-Lomiri-Default-Department-ID=games

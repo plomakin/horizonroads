@@ -7,8 +7,11 @@ import HorizonRoads 1.0
 Window {
     id: rootWin
     visible: true
-    width: units.gu(45)
-    height: units.gu(80)
+    visibility: Window.FullScreen
+    // Lomiri/Mir Staged-mode fullscreen flag (0x00800000) hides the top indicator panel edge-to-edge
+    flags: Qt.Window | 0x00800000
+    width: Screen.width > 0 ? Screen.width : units.gu(45)
+    height: Screen.height > 0 ? Screen.height : units.gu(80)
     title: "Horizon Roads 3D"
     color: "#0b0f19"
 
@@ -17,11 +20,21 @@ Window {
     property bool minimalZenUi: false
     property bool sensorReady: false
 
+    Component.onCompleted: {
+        rootWin.visibility = Window.FullScreen
+        rootWin.showFullScreen()
+    }
+
     Timer {
         interval: 300
         running: true
         repeat: false
-        onTriggered: rootWin.sensorReady = true
+        onTriggered: {
+            rootWin.sensorReady = true
+            if (rootWin.visibility !== Window.FullScreen) {
+                rootWin.visibility = Window.FullScreen
+            }
+        }
     }
 
     Connections {
@@ -29,8 +42,13 @@ Window {
         onStateChanged: {
             if (Qt.application.state !== Qt.ApplicationActive) {
                 road.paused = true
-            } else if (!rootWin.drawerOpen) {
-                road.paused = false
+            } else {
+                if (rootWin.visibility !== Window.FullScreen) {
+                    rootWin.visibility = Window.FullScreen
+                }
+                if (!rootWin.drawerOpen) {
+                    road.paused = false
+                }
             }
         }
     }
@@ -394,7 +412,7 @@ Window {
 
                 Row {
                     anchors.left: parent.left
-                    anchors.leftMargin: units.gu(1.4)
+                    anchors.leftMargin: units.gu(2.2)
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: units.gu(1.5)
 

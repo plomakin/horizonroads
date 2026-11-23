@@ -6,7 +6,7 @@ set -euo pipefail
 
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 APP_ID="horizonroads.plm"
-CLICK_FILE="${PROJ}/release/${APP_ID}_1.5.0_arm64.click"
+CLICK_FILE="${PROJ}/release/${APP_ID}_1.5.1_arm64.click"
 CHANGELOG="${1:-Initial v1.0.0 release: Endless 3D scenic highway across 6 biomes, dynamic 24h sky & 4 weather modes, 3 cars with bespoke interactive cockpit dashboards & rotating steering wheels, accelerometer tilt steering, Zen Auto-Drive cruise mode, and 3 procedural FM synth radio stations.}"
 
 if [ -z "${OPENSTORE_API_KEY:-}" ]; then
